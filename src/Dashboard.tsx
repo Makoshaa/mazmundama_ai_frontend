@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { BookOpen, Upload, Trash2, Eye, User, LogOut, FileText, Calendar } from 'lucide-react';
 import { useAuth } from './AuthContext';
 
-const API_URL = 'http://127.0.0.1:8080';
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
 
 interface Book {
   id: number;

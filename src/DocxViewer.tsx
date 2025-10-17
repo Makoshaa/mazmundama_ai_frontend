@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { FileText, ChevronLeft, ChevronRight, Eye, EyeOff, Settings, Edit3, MessageCircle, Sparkles, History, Check, Copy, X, Languages, ArrowLeft } from 'lucide-react';
 import { useAuth } from './AuthContext';
 
-const API_URL = 'http://127.0.0.1:8080';
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
 
 interface DocxViewerProps {
   bookId: number;
