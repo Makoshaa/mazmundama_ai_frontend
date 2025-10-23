@@ -138,10 +138,18 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
         setLoadingProgress(70);
 
         if (!response.ok) {
-          throw new Error('Ошибка загрузки книги');
+          const errorText = await response.text();
+          console.error('Backend response error:', response.status, errorText);
+          throw new Error(`Ошибка загрузки книги: ${response.status} - ${errorText}`);
         }
 
         const data = await response.json();
+        console.log('[DEBUG] Book data loaded:', { 
+          hasPages: !!data.pages, 
+          pagesCount: data.pages?.length, 
+          hasTranslations: !!data.translations,
+          hasVersions: !!data.versions 
+        });
 
         setLoadingProgress(90);
         
@@ -202,7 +210,7 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
             let appliedCount = 0;
             Object.entries(pageTranslations).forEach(([sentenceId, translatedText]) => {
               const element = doc.querySelector(`[data-sentence-id="${sentenceId}"]`);
-              if (element) {
+              if (element && translatedText && typeof translatedText === 'string') {
                 console.log(`[DEBUG] Applying translation for ${sentenceId}: "${element.textContent?.substring(0, 30)}" -> "${translatedText.substring(0, 30)}"`);
                 element.textContent = translatedText;
                 element.classList.add('translated-sentence');
@@ -211,7 +219,13 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
                 }
                 appliedCount++;
               } else {
-                console.warn(`[DEBUG] Element not found for sentence ${sentenceId}`);
+                if (!element) {
+                  console.warn(`[DEBUG] Element not found for sentence ${sentenceId}`);
+                } else if (!translatedText) {
+                  console.warn(`[DEBUG] No translation text for sentence ${sentenceId}`);
+                } else {
+                  console.warn(`[DEBUG] Invalid translation type for sentence ${sentenceId}:`, typeof translatedText);
+                }
               }
             });
             
@@ -255,8 +269,11 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
         setLoadingProgress(100);
       } catch (error: any) {
         console.error('Ошибка загрузки книги:', error);
-        setError(error.message || 'Не удалось загрузить книгу');
-        alert(`Ошибка: ${error.message || 'Не удалось загрузить книгу'}`);
+        console.error('Error stack:', error.stack);
+        console.error('Error details:', JSON.stringify(error, null, 2));
+        const errorMsg = error.message || error.toString() || 'Не удалось загрузить книгу';
+        setError(errorMsg);
+        alert(`Ошибка загрузки книги: ${errorMsg}`);
       } finally {
         setLoading(false);
         setTimeout(() => setLoadingProgress(0), 500);
