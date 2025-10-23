@@ -1,8 +1,8 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { FileText, ChevronLeft, ChevronRight, Eye, EyeOff, Settings, Edit3, MessageCircle, Sparkles, History, Check, Copy, X, Languages, ArrowLeft } from 'lucide-react';
+import { FileText, ChevronLeft, ChevronRight, Eye, EyeOff, X, Languages, ArrowLeft, MessageCircle, Sparkles, Check } from 'lucide-react';
 import { useAuth } from './AuthContext';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
+const API_URL = 'http://127.0.0.1:8080';
 
 interface DocxViewerProps {
   bookId: number;
@@ -17,7 +17,6 @@ const PageThumbnail = React.memo(({ page, index, isActive, onClick }: any) => {
   useEffect(() => {
     const observer = new IntersectionObserver(
       ([entry]) => {
-        // Устанавливаем видимость в зависимости от того, виден ли элемент
         setIsVisible(entry.isIntersecting);
       },
       { threshold: 0.01, rootMargin: '100px' }
@@ -30,7 +29,6 @@ const PageThumbnail = React.memo(({ page, index, isActive, onClick }: any) => {
     return () => observer.disconnect();
   }, []);
 
-  // Показываем контент только если миниатюра видна ИЛИ активна
   const shouldShowContent = isVisible || isActive;
 
   return (
@@ -69,7 +67,6 @@ const PageThumbnail = React.memo(({ page, index, isActive, onClick }: any) => {
     </div>
   );
 }, (prevProps, nextProps) => {
-  // Оптимизация: перерисовываем только при изменении активности или индекса
   return prevProps.isActive === nextProps.isActive &&
          prevProps.index === nextProps.index;
 });
@@ -79,8 +76,8 @@ PageThumbnail.displayName = 'PageThumbnail';
 export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProps) {
   const { token, username } = useAuth();
   
-  const [pages, setPages] = useState<string[]>([]); // Переведенные страницы (для правой колонки)
-  const [originalPages, setOriginalPages] = useState<string[]>([]); // Оригинальные страницы (для левой колонки)
+  const [pages, setPages] = useState<string[]>([]);
+  const [originalPages, setOriginalPages] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingProgress, setLoadingProgress] = useState(0);
@@ -104,21 +101,28 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
   const [translations, setTranslations] = useState<Record<number, Record<string, string>>>({});
   const [translationHistory, setTranslationHistory] = useState<Record<string, Array<{text: string, timestamp: number, model?: string}>>>({});
   const [approvedTranslations, setApprovedTranslations] = useState<Set<string>>(new Set());
-  const [detailsPanelOpen, setDetailsPanelOpen] = useState(false);
+  
+  const translationsRef = useRef<Record<number, Record<string, string>>>({});
+  const approvedTranslationsRef = useRef<Set<string>>(new Set());
+  const currentPageRef = useRef<number>(0);
+  const translationModelRef = useRef<'kazllm' | 'claude' | 'chatgpt'>('kazllm');
+  const [editingSentenceId, setEditingSentenceId] = useState<string | null>(null);
+  const [detailsModalOpen, setDetailsModalOpen] = useState(false);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [modalSelectedText, setModalSelectedText] = useState('');
+  const [modalSelectionStart, setModalSelectionStart] = useState(0);
+  const [modalSelectionEnd, setModalSelectionEnd] = useState(0);
   const [selectedSentenceId, setSelectedSentenceId] = useState<string | null>(null);
-  const [editedTranslation, setEditedTranslation] = useState('');
   const [explanation, setExplanation] = useState('');
   const [isExplaining, setIsExplaining] = useState(false);
   const [improvementPrompt, setImprovementPrompt] = useState('');
   const [improvementResult, setImprovementResult] = useState('');
   const [isImproving, setIsImproving] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
   
   const BUTTON_OFFSET_X = 10;
   const GUARD_VERTICAL_PADDING = 12;
   const GUARD_EXTRA_WIDTH = 80;
 
-  // Load book on mount
   useEffect(() => {
     const loadBook = async () => {
       try {
@@ -144,17 +148,17 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
         console.log('[DEBUG] Loaded book data:', {
           pages: data.pages?.length,
           translations: Object.keys(data.translations || {}).length,
-          translationsData: data.translations
+          translationsData: data.translations,
+          versions: data.versions
         });
 
         if (data.pages && data.pages.length > 0) {
-          // Load translations
           const translationsMap: Record<number, Record<string, string>> = {};
           const approvedSet = new Set<string>();
           
           if (data.translations) {
             Object.entries(data.translations).forEach(([sentenceId, translation]: [string, any]) => {
-              const pageNum = translation.page_number - 1; // Backend uses 1-indexed pages
+              const pageNum = translation.page_number - 1;
               if (!translationsMap[pageNum]) {
                 translationsMap[pageNum] = {};
               }
@@ -166,21 +170,32 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
             });
           }
           
+          // Загружаем историю версий из БД
+          const historyMap: Record<string, Array<{text: string, timestamp: number, model?: string}>> = {};
+          if (data.versions) {
+            console.log('[DEBUG FRONTEND] Versions from API:', data.versions);
+            Object.entries(data.versions).forEach(([sentenceId, versions]: [string, any]) => {
+              historyMap[sentenceId] = versions;
+            });
+            console.log('[DEBUG FRONTEND] historyMap created, sentences with history:', Object.keys(historyMap).length);
+          } else {
+            console.warn('[DEBUG FRONTEND] No versions in API response!');
+          }
+          
           console.log('[DEBUG] Processed translations:', {
             translationsMap,
-            approvedCount: approvedSet.size
+            approvedCount: approvedSet.size,
+            historyCount: Object.keys(historyMap).length
           });
           
-          // Apply translations to pages HTML
           const pagesWithTranslations = data.pages.map((pageHtml: string, pageIndex: number) => {
             const pageTranslations = translationsMap[pageIndex] || {};
             console.log(`[DEBUG] Page ${pageIndex + 1} has ${Object.keys(pageTranslations).length} translations`);
             
             if (Object.keys(pageTranslations).length === 0) {
-              return pageHtml; // No translations for this page
+              return pageHtml;
             }
             
-            // Apply translations to this page
             const parser = new DOMParser();
             const doc = parser.parseFromString(pageHtml, 'text/html');
             
@@ -204,10 +219,34 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
             return doc.body.innerHTML;
           });
           
-          setOriginalPages(data.pages); // Сохраняем оригинальные страницы (без переводов)
-          setPages(pagesWithTranslations); // Сохраняем переведенные страницы (с переводами)
+          const originalPagesWithHighlight = data.pages.map((pageHtml: string, pageIndex: number) => {
+            const pageTranslations = translationsMap[pageIndex] || {};
+            
+            if (Object.keys(pageTranslations).length === 0) {
+              return pageHtml;
+            }
+            
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(pageHtml, 'text/html');
+            
+            Object.keys(pageTranslations).forEach((sentenceId) => {
+              const element = doc.querySelector(`[data-sentence-id="${sentenceId}"]`);
+              if (element) {
+                element.classList.add('translated-sentence');
+                if (approvedSet.has(sentenceId)) {
+                  element.classList.add('approved-sentence');
+                }
+              }
+            });
+            
+            return doc.body.innerHTML;
+          });
+          
+          setOriginalPages(originalPagesWithHighlight);
+          setPages(pagesWithTranslations);
           setTranslations(translationsMap);
           setApprovedTranslations(approvedSet);
+          setTranslationHistory(historyMap);
           setCurrentPage(0);
         } else {
           throw new Error('Книга не содержит страниц');
@@ -228,17 +267,19 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
   }, [bookId, token]);
 
   const addToHistory = useCallback((sentenceId: string, text: string, model?: string) => {
-    setTranslationHistory(prev => ({
-      ...prev,
-      [sentenceId]: [
-        ...(prev[sentenceId] || []),
-        { text, timestamp: Date.now(), model }
-      ]
-    }));
+    setTranslationHistory(prev => {
+      const newHistory = {
+        ...prev,
+        [sentenceId]: [
+          ...(prev[sentenceId] || []),
+          { text, timestamp: Date.now(), model }
+        ]
+      };
+      return newHistory;
+    });
   }, []);
 
   const saveTranslation = useCallback(async (sentenceId: string, text: string, model?: string) => {
-    // Сохраняем локально
     setTranslations(prev => ({
       ...prev,
       [currentPage]: {
@@ -247,9 +288,7 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
       },
     }));
     addToHistory(sentenceId, text, model);
-    setEditedTranslation(text);
     
-    // Обновляем HTML страницы чтобы перевод сохранился при переключении
     setPages(prevPages => {
       const updatedPages = [...prevPages];
       const pageHtml = updatedPages[currentPage];
@@ -268,8 +307,25 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
       
       return updatedPages;
     });
+    
+    setOriginalPages(prevPages => {
+      const updatedPages = [...prevPages];
+      const pageHtml = updatedPages[currentPage];
+      
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(pageHtml, 'text/html');
+      const element = doc.querySelector(`[data-sentence-id="${sentenceId}"]`);
+      
+      if (element) {
+        if (!element.classList.contains('translated-sentence')) {
+          element.classList.add('translated-sentence');
+        }
+        updatedPages[currentPage] = doc.body.innerHTML;
+      }
+      
+      return updatedPages;
+    });
 
-    // Сохраняем в БД
     if (token) {
       try {
         const originalSentence = document.querySelector(`[data-sentence-id="${sentenceId}"]`);
@@ -292,7 +348,6 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
         });
       } catch (error) {
         console.error('Ошибка сохранения в БД:', error);
-        // Не показываем ошибку пользователю, т.к. локально уже сохранено
       }
     }
   }, [currentPage, bookId, token, translationModel, addToHistory]);
@@ -300,7 +355,6 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
   const approveTranslation = useCallback(async (sentenceId: string) => {
     setApprovedTranslations(prev => new Set([...prev, sentenceId]));
     
-    // Обновляем HTML страницы для добавления класса approved
     setPages(prevPages => {
       const updatedPages = [...prevPages];
       const pageHtml = updatedPages[currentPage];
@@ -316,8 +370,23 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
       
       return updatedPages;
     });
+    
+    setOriginalPages(prevPages => {
+      const updatedPages = [...prevPages];
+      const pageHtml = updatedPages[currentPage];
+      
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(pageHtml, 'text/html');
+      const element = doc.querySelector(`[data-sentence-id="${sentenceId}"]`);
+      
+      if (element) {
+        element.classList.add('approved-sentence');
+        updatedPages[currentPage] = doc.body.innerHTML;
+      }
+      
+      return updatedPages;
+    });
 
-    // Сохраняем статус в БД
     if (token) {
       try {
         await fetch(`${API_URL}/api/books/translation/approve`, {
@@ -337,36 +406,146 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
     }
   }, [bookId, token, currentPage]);
 
-  const openDetailsPanel = useCallback((sentenceId: string) => {
-    const translation = translations[currentPage]?.[sentenceId] || '';
-    setSelectedSentenceId(sentenceId);
-    setEditedTranslation(translation);
-    setExplanation('');
-    setImprovementPrompt('');
-    setImprovementResult('');
-    setShowHistory(false);
-    setDetailsPanelOpen(true);
-  }, [translations, currentPage]);
+  const startEditing = useCallback((sentenceId: string) => {
+    setEditingSentenceId(sentenceId);
+  }, []);
 
-  const closeDetailsPanel = useCallback(() => {
-    setDetailsPanelOpen(false);
-    setSelectedSentenceId(null);
+  const openDetailsModal = useCallback((sentenceId: string, selectedText: string, selStart: number, selEnd: number) => {
+    setSelectedSentenceId(sentenceId);
+    setModalSelectedText(selectedText);
+    setModalSelectionStart(selStart);
+    setModalSelectionEnd(selEnd);
     setExplanation('');
     setImprovementPrompt('');
     setImprovementResult('');
-    setShowHistory(false);
+    setDetailsModalOpen(true);
+  }, []);
+
+  const closeDetailsModal = useCallback(() => {
+    setDetailsModalOpen(false);
+    setModalSelectedText('');
+    setExplanation('');
+    setImprovementPrompt('');
+    setImprovementResult('');
+    
+    // Проверяем, существует ли inline редактор после закрытия модального окна
+    setTimeout(() => {
+      const textarea = document.querySelector('.inline-editor-textarea') as HTMLTextAreaElement;
+      if (textarea) {
+        // Если редактор найден, восстанавливаем фокус
+        textarea.focus();
+      } else {
+        // Если редактор закрылся, сбрасываем состояние
+        setEditingSentenceId(null);
+      }
+    }, 100);
+  }, []);
+
+  const openHistoryModal = useCallback((sentenceId: string) => {
+    setSelectedSentenceId(sentenceId);
+    setHistoryModalOpen(true);
+  }, []);
+
+  const closeHistoryModal = useCallback(() => {
+    setHistoryModalOpen(false);
+    
+    // Проверяем, существует ли inline редактор после закрытия модального окна
+    setTimeout(() => {
+      const textarea = document.querySelector('.inline-editor-textarea') as HTMLTextAreaElement;
+      if (textarea) {
+        // Если редактор найден, восстанавливаем фокус
+        textarea.focus();
+      } else {
+        // Если редактор закрылся, сбрасываем состояние
+        setEditingSentenceId(null);
+      }
+    }, 100);
+  }, []);
+
+  // Функция для вычисления diff между двумя текстами
+  const removeQuotes = useCallback((text: string): string => {
+    let result = text.trim();
+    // Удаляем кавычки из начала и конца, если они есть
+    if ((result.startsWith('"') && result.endsWith('"')) || 
+        (result.startsWith("'") && result.endsWith("'"))) {
+      result = result.slice(1, -1).trim();
+    }
+    return result;
+  }, []);
+
+  const computeDiff = useCallback((oldText: string, newText: string) => {
+    const oldWords = oldText.split(/(\s+)/);
+    const newWords = newText.split(/(\s+)/);
+    
+    const result: Array<{type: 'added' | 'removed' | 'unchanged', text: string}> = [];
+    
+    let i = 0, j = 0;
+    while (i < oldWords.length || j < newWords.length) {
+      if (i >= oldWords.length) {
+        // Остались только новые слова
+        result.push({type: 'added', text: newWords[j]});
+        j++;
+      } else if (j >= newWords.length) {
+        // Остались только старые слова
+        result.push({type: 'removed', text: oldWords[i]});
+        i++;
+      } else if (oldWords[i] === newWords[j]) {
+        // Слова совпадают
+        result.push({type: 'unchanged', text: oldWords[i]});
+        i++;
+        j++;
+      } else {
+        // Слова различаются - ищем совпадения дальше
+        let foundMatch = false;
+        
+        // Проверяем, есть ли текущее старое слово в следующих новых словах
+        for (let k = j + 1; k < Math.min(j + 5, newWords.length); k++) {
+          if (oldWords[i] === newWords[k]) {
+            // Нашли совпадение - значит слова между j и k были добавлены
+            for (let l = j; l < k; l++) {
+              result.push({type: 'added', text: newWords[l]});
+            }
+            j = k;
+            foundMatch = true;
+            break;
+          }
+        }
+        
+        if (!foundMatch) {
+          // Проверяем, есть ли текущее новое слово в следующих старых словах
+          for (let k = i + 1; k < Math.min(i + 5, oldWords.length); k++) {
+            if (oldWords[k] === newWords[j]) {
+              // Нашли совпадение - значит слова между i и k были удалены
+              for (let l = i; l < k; l++) {
+                result.push({type: 'removed', text: oldWords[l]});
+              }
+              i = k;
+              foundMatch = true;
+              break;
+            }
+          }
+        }
+        
+        if (!foundMatch) {
+          // Не нашли совпадений - считаем что слово было заменено
+          result.push({type: 'removed', text: oldWords[i]});
+          result.push({type: 'added', text: newWords[j]});
+          i++;
+          j++;
+        }
+      }
+    }
+    
+    return result;
   }, []);
 
   const explainTranslation = useCallback(async () => {
-    if (!selectedSentenceId) return;
+    if (!selectedSentenceId || !modalSelectedText) return;
     
-    const sentence = document.querySelector(`[data-sentence-id="${selectedSentenceId}"]`);
-    if (!sentence) return;
+    const originalElement = document.querySelector(`.original-column [data-sentence-id="${selectedSentenceId}"]`);
+    const originalText = originalElement?.textContent || '';
+    const translatedText = modalSelectedText;
     
-    const originalText = sentence.textContent || '';
-    const translatedText = editedTranslation;
-    
-    // Определяем API endpoint: kazllm не поддерживает объяснения, используем chatgpt
     const apiModel = translationModel === 'kazllm' ? 'chatgpt' : translationModel;
     const apiEndpoint = apiModel === 'claude' ? '/api/claude' : '/api/chatgpt';
     const modelName = apiModel === 'claude' ? 'claude-sonnet-4-5-20250929' : 'gpt-4';
@@ -385,27 +564,50 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
       
       if (!response.ok) throw new Error('Ошибка API');
       const data = await response.json();
-      setExplanation(data.message);
+      setExplanation(removeQuotes(data.message));
     } catch (error) {
       console.error('Ошибка объяснения:', error);
       alert('Не удалось получить объяснение');
     } finally {
       setIsExplaining(false);
     }
-  }, [selectedSentenceId, editedTranslation, translationModel]);
+  }, [selectedSentenceId, modalSelectedText, translationModel]);
 
   const improveTranslation = useCallback(async () => {
-    if (!selectedSentenceId || !improvementPrompt.trim()) return;
+    if (!selectedSentenceId || !improvementPrompt.trim() || !modalSelectedText) return;
     
-    const sentence = document.querySelector(`[data-sentence-id="${selectedSentenceId}"]`);
-    if (!sentence) return;
+    // Получаем полный текст перевода из textarea
+    const textarea = document.querySelector('.inline-editor-textarea') as HTMLTextAreaElement;
+    const fullTranslation = textarea?.value || translationsRef.current[currentPageRef.current]?.[selectedSentenceId] || '';
     
-    const originalText = sentence.textContent || '';
+    // Получаем оригинальное предложение
+    const originalSentenceElement = document.querySelector(`.original-column [data-sentence-id="${selectedSentenceId}"]`);
+    const originalSentenceText = originalSentenceElement?.textContent || '';
     
-    // Определяем API endpoint: kazllm не поддерживает улучшение, используем chatgpt
+    // Получаем оригинальный абзац (контекст)
+    const originalParagraph = originalSentenceElement?.closest('p, h1, h2, h3, h4, h5, h6, li');
+    let originalParagraphText = '';
+    if (originalParagraph) {
+      // Извлекаем весь текст абзаца без HTML тегов
+      originalParagraphText = originalParagraph.textContent || '';
+    }
+    
+    // Определяем: выделено всё предложение или только фрагмент
+    const isFullSentenceSelected = modalSelectedText.trim() === fullTranslation.trim();
+    
     const apiModel = translationModel === 'kazllm' ? 'chatgpt' : translationModel;
     const apiEndpoint = apiModel === 'claude' ? '/api/claude' : '/api/chatgpt';
     const modelName = apiModel === 'claude' ? 'claude-sonnet-4-5-20250929' : 'gpt-4';
+    
+    let promptMessage = '';
+    
+    if (isFullSentenceSelected) {
+      // Выделено полное предложение - используем оригинальное предложение и контекст абзаца
+      promptMessage = `Улучши перевод предложения согласно запросу:\n\nКонтекст абзаца (English): "${originalParagraphText}"\n\nОригинальное предложение (English): "${originalSentenceText}"\nТекущий перевод предложения (Kazakh): "${modalSelectedText}"\n\nЗапрос на улучшение: ${improvementPrompt}\n\nПредоставь от 1 до 5 улучшенных вариантов перевода ВСЕГО предложения на казахском языке, учитывая контекст абзаца. Каждый вариант начинай с новой строки с номером (1., 2., и т.д.). Никаких объяснений, только варианты переводов.`;
+    } else {
+      // Выделен фрагмент - используем только контекст абзаца
+      promptMessage = `Улучши перевод выделенного фрагмента согласно запросу:\n\nКонтекст абзаца (English): "${originalParagraphText}"\n\nПолный текущий перевод предложения (Kazakh): "${fullTranslation}"\nВыделенный фрагмент для улучшения (Kazakh): "${modalSelectedText}"\n\nЗапрос на улучшение: ${improvementPrompt}\n\nПредоставь от 1 до 5 улучшенных вариантов ТОЛЬКО для выделенного фрагмента на казахском языке, которые будут хорошо вписываться в контекст предложения и абзаца. Каждый вариант начинай с новой строки с номером (1., 2., и т.д.). Никаких объяснений, только варианты переводов фрагмента.`;
+    }
     
     setIsImproving(true);
     try {
@@ -413,7 +615,7 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: `Улучши перевод согласно запросу:\n\nОригинал (English): "${originalText}"\nТекущий перевод (Kazakh): "${editedTranslation}"\nЗапрос: ${improvementPrompt}\n\nПредоставь от 1 до 5 улучшенных вариантов перевода на казахском языке. Каждый вариант начинай с новой строки с номером (1., 2., и т.д.). Никаких объяснений, только варианты переводов.`,
+          message: promptMessage,
           model: modelName,
           temperature: 0.8
         })
@@ -421,41 +623,30 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
       
       if (!response.ok) throw new Error('Ошибка API');
       const data = await response.json();
-      setImprovementResult(data.message);
+      setImprovementResult(removeQuotes(data.message));
     } catch (error) {
       console.error('Ошибка улучшения:', error);
       alert('Не удалось получить улучшенный вариант');
     } finally {
       setIsImproving(false);
     }
-  }, [selectedSentenceId, editedTranslation, improvementPrompt, translationModel]);
-
-  // @ts-ignore - unused but may be used in future
-  const applyImprovement = useCallback(() => {
-    if (!selectedSentenceId || !improvementResult) return;
-    saveTranslation(selectedSentenceId, improvementResult, translationModel);
-    setImprovementResult('');
-    setImprovementPrompt('');
-  }, [selectedSentenceId, improvementResult, translationModel, saveTranslation]);
+  }, [selectedSentenceId, modalSelectedText, modalSelectionStart, modalSelectionEnd, improvementPrompt, translationModel]);
 
 
 
   const handlePageChange = useCallback((newPage: number) => {
     setCurrentPage(newPage);
+    setEditingSentenceId(null);
     if (window.innerWidth < 1024) {
       setSidebarOpen(false);
     }
   }, []);
 
-
-
-  // Левая колонка - всегда оригинал (без изменений)
   const originalPageHTML = useMemo(() => {
     if (originalPages.length === 0) return '';
     return originalPages[currentPage];
   }, [originalPages, currentPage]);
   
-  // Правая колонка - переведенная версия
   const translatedPageHTML = useMemo(() => {
     if (pages.length === 0) return '';
     return pages[currentPage];
@@ -468,12 +659,10 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
     }
     
     const doClear = () => {
-      // КРИТИЧНО: Не очищаем если предложение переводится
       if (sentenceId && translatingIdsRef.current.has(sentenceId)) {
         return;
       }
       
-      // Не очищаем если кнопка наведена
       if (isButtonHoveredRef.current) {
         return;
       }
@@ -483,12 +672,12 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
       setButtonPosition(null);
       setHoveredSentenceRect(null);
       
-      // Удаляем класс active-sentence только если предложение точно не переводится
       requestAnimationFrame(() => {
         document.querySelectorAll('.sentence.active-sentence').forEach((el) => {
           const elId = el.getAttribute('data-sentence-id');
-          // Не удаляем класс если это предложение переводится или это миниатюра
-          if (el.closest('.thumbnail') || (elId && translatingIdsRef.current.has(elId))) {
+          if (el.closest('.thumbnail') || 
+              (elId && translatingIdsRef.current.has(elId)) ||
+              el.querySelector('.inline-editor-container')) {
             return;
           }
           el.classList.remove('active-sentence');
@@ -511,6 +700,14 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
 
     const handleClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
+      
+      if (target?.closest('.inline-editor-container') || 
+          target?.closest('.translate-guard') ||
+          target?.closest('.translate-button') ||
+          target?.closest('[class*="animate-slideInRight"]')) {
+        return;
+      }
+      
       const sentence = target?.closest?.('.sentence') as HTMLElement | null;
       
       if (sentence?.closest('.thumbnail')) {
@@ -520,14 +717,24 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
       if (sentence) {
         const id = sentence.getAttribute('data-sentence-id');
         if (id && translations[currentPage]?.[id]) {
-          // Если это переведенное предложение, открываем панель деталей
-          openDetailsPanel(id);
+          if (editingSentenceId === id) return;
+          startEditing(id);
         }
       }
     };
 
     const handleMouseOver = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
+      
+      if (editingSentenceId) {
+        return;
+      }
+      
+      if (target?.closest('.inline-editor-container') || 
+          target?.closest('[class*="animate-slideInRight"]')) {
+        return;
+      }
+      
       const sentence = target?.closest?.('.sentence') as HTMLElement | null;
       
       if (sentence?.closest('.thumbnail')) {
@@ -574,17 +781,11 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
             height: rect.height,
           });
           
-          // Проверяем есть ли перевод для этого предложения
           const hasTranslation = translations[currentPage]?.[id];
           
-          // Логика показа кнопок:
-          // - В левой колонке (оригинал): показываем кнопку "Перевести" только если нет перевода
-          // - Переведенные предложения теперь кликабельны сами по себе, кнопка не нужна
           if (!isInTranslationColumn && !hasTranslation) {
-            // Левая колонка, нет перевода → показываем кнопку "Перевести"
             setButtonPosition({ x: rect.right + BUTTON_OFFSET_X, y: rect.top });
           } else {
-            // Все остальные случаи - не показываем кнопку
             setButtonPosition(null);
           }
         }
@@ -594,9 +795,15 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
     const handleMouseOut = (e: MouseEvent) => {
       const related = (e.relatedTarget as HTMLElement) || null;
       
+      if (editingSentenceId) {
+        return;
+      }
+      
       if (related?.closest('.translate-button') || 
           related?.closest('.details-button') || 
-          related?.closest('.translate-guard')) {
+          related?.closest('.translate-guard') ||
+          related?.closest('.inline-editor-container') ||
+          related?.closest('[class*="animate-slideInRight"]')) {
         return;
       }
       
@@ -631,7 +838,7 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
         clearTimeoutRef.current = null;
       }
     };
-  }, [pages, currentPage, translatedPageHTML, BUTTON_OFFSET_X, clearHoverState, hoveredSentenceId, translations, openDetailsPanel]);
+  }, [pages, currentPage, translatedPageHTML, BUTTON_OFFSET_X, clearHoverState, hoveredSentenceId, translations, startEditing, editingSentenceId]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -652,6 +859,387 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
     
     return () => cancelAnimationFrame(frame);
   }, [hoveredSentenceId]);
+
+  useEffect(() => {
+    translationsRef.current = translations;
+    approvedTranslationsRef.current = approvedTranslations;
+    currentPageRef.current = currentPage;
+    translationModelRef.current = translationModel;
+  }, [translations, approvedTranslations, currentPage, translationModel]);
+
+  useEffect(() => {
+    if (!editingSentenceId) return;
+    
+    const sentenceElements = document.querySelectorAll(`[data-sentence-id="${editingSentenceId}"]`);
+    if (sentenceElements.length === 0) return;
+    
+    const targetElement = Array.from(sentenceElements).find((el) => 
+      el.closest('.translation-column') && !el.closest('.thumbnail')
+    ) as HTMLElement | undefined;
+    
+    if (!targetElement || !targetElement.parentElement) return;
+    
+    if (targetElement.querySelector('.inline-editor-container')) {
+      return;
+    }
+    
+    const isApproved = approvedTranslationsRef.current.has(editingSentenceId);
+    const initialText = translationsRef.current[currentPageRef.current]?.[editingSentenceId] || '';
+    
+    const editorContainer = document.createElement('div');
+    editorContainer.className = 'inline-editor-container';
+    editorContainer.setAttribute('data-editing-sentence', editingSentenceId);
+    editorContainer.innerHTML = `
+      <div class="inline-editor-textarea-wrapper">
+        <textarea class="inline-editor-textarea" spellcheck="false">${initialText}</textarea>
+      </div>
+      <div class="inline-editor-tools">
+        <button class="inline-editor-btn-tool inline-editor-btn-gpt" disabled title="Re-перевод выделенного текста через GPT">
+          <svg class="w-3.5 h-3.5" viewBox="0 0 41 41" fill="none">
+            <path d="M37.5324 16.8707C37.9808 15.5241 38.1363 14.0974 37.9886 12.6859C37.8409 11.2744 37.3934 9.91076 36.676 8.68622C35.6126 6.83404 33.9882 5.3676 32.0373 4.4985C30.0864 3.62941 27.9098 3.40259 25.8215 3.85078C24.8796 2.7893 23.7219 1.94125 22.4257 1.36341C21.1295 0.785575 19.7249 0.491269 18.3058 0.500197C16.1708 0.495044 14.0893 1.16803 12.3614 2.42214C10.6335 3.67624 9.34853 5.44666 8.6917 7.47815C7.30085 7.76286 5.98686 8.3414 4.8377 9.17505C3.68854 10.0087 2.73073 11.0782 2.02839 12.312C0.956464 14.1591 0.498905 16.2988 0.721698 18.4228C0.944492 20.5467 1.83612 22.5449 3.268 24.1293C2.81966 25.4759 2.66413 26.9026 2.81182 28.3141C2.95951 29.7256 3.40701 31.0892 4.12437 32.3138C5.18791 34.1659 6.8123 35.6322 8.76321 36.5013C10.7141 37.3704 12.8907 37.5973 14.9789 37.1492C15.9208 38.2107 17.0786 39.0587 18.3747 39.6366C19.6709 40.2144 21.0755 40.5087 22.4946 40.4998C24.6307 40.5054 26.7133 39.8321 28.4418 38.5772C30.1704 37.3223 31.4556 35.5506 32.1119 33.5179C33.5027 33.2332 34.8167 32.6547 35.9659 31.821C37.115 30.9874 38.0728 29.9178 38.7752 28.684C39.8458 26.8371 40.3023 24.6979 40.0789 22.5748C39.8556 20.4517 38.9639 18.4544 37.5324 16.8707ZM22.4978 37.8849C20.7443 37.8874 19.0459 37.2733 17.6994 36.1501C17.7601 36.117 17.8666 36.0586 17.936 36.0161L25.9004 31.4156C26.1003 31.3019 26.2663 31.137 26.3813 30.9378C26.4964 30.7386 26.5563 30.5124 26.5549 30.2825V19.0542L29.9213 20.998C29.9389 21.0068 29.9541 21.0198 29.9656 21.0359C29.977 21.052 29.9842 21.0707 29.9867 21.0902V30.3889C29.9842 32.375 29.1946 34.2791 27.7909 35.6841C26.3872 37.0892 24.4838 37.8806 22.4978 37.8849ZM6.39227 31.0064C5.51397 29.4888 5.19742 27.7107 5.49804 25.9832C5.55718 26.0187 5.66048 26.0818 5.73461 26.1244L13.699 30.7248C13.8975 30.8408 14.1233 30.902 14.3532 30.902C14.583 30.902 14.8088 30.8408 15.0073 30.7248L24.731 25.1103V28.9979C24.7321 29.0177 24.7283 29.0376 24.7199 29.0556C24.7115 29.0736 24.6988 29.0893 24.6829 29.1012L16.6317 33.7497C14.9096 34.7416 12.8643 35.0097 10.9447 34.4954C9.02506 33.9811 7.38785 32.7263 6.39227 31.0064ZM4.29707 13.6194C5.17156 12.0998 6.55279 10.9364 8.19885 10.3327C8.19885 10.4013 8.19491 10.5228 8.19491 10.6071V19.808C8.19351 20.0378 8.25334 20.2638 8.36823 20.4629C8.48312 20.6619 8.64893 20.8267 8.84863 20.9404L18.5723 26.5542L15.206 28.4979C15.1894 28.5089 15.1703 28.5155 15.1505 28.5173C15.1307 28.5191 15.1107 28.516 15.0924 28.5082L7.04046 23.8557C5.32135 22.8601 4.06716 21.2235 3.55289 19.3046C3.03862 17.3858 3.30624 15.3413 4.29707 13.6194ZM31.955 20.0556L22.2312 14.4411L25.5976 12.4981C25.6142 12.4872 25.6333 12.4805 25.6531 12.4787C25.6729 12.4769 25.6928 12.4801 25.7111 12.4879L33.7631 17.1364C34.9967 17.849 36.0017 18.8982 36.6606 20.1613C37.3194 21.4244 37.6047 22.849 37.4832 24.2684C37.3617 25.6878 36.8382 27.0432 35.9743 28.1759C35.1103 29.3086 33.9415 30.1717 32.6047 30.6641C32.6047 30.5947 32.6047 30.4733 32.6047 30.3889V21.188C32.6066 20.9586 32.5474 20.7328 32.4332 20.5338C32.319 20.3348 32.154 20.1698 31.955 20.0556ZM35.3055 15.0128C35.2464 14.9765 35.1431 14.9142 35.069 14.8717L27.1045 10.2712C26.906 10.1554 26.6803 10.0943 26.4504 10.0943C26.2206 10.0943 25.9948 10.1554 25.7963 10.2712L16.0726 15.8858V11.9982C16.0715 11.9783 16.0753 11.9585 16.0837 11.9405C16.0921 11.9225 16.1048 11.9068 16.1207 11.8949L24.1719 7.25025C25.4053 6.53903 26.8158 6.19376 28.2383 6.25482C29.6608 6.31589 31.0364 6.78077 32.2044 7.59508C33.3723 8.40939 34.2842 9.53945 34.8334 10.8531C35.3826 12.1667 35.5464 13.6095 35.3055 15.0128ZM14.2424 21.9419L10.8752 19.9981C10.8576 19.9893 10.8423 19.9763 10.8309 19.9602C10.8195 19.9441 10.8122 19.9254 10.8098 19.9058V10.6071C10.8107 9.18295 11.2173 7.78848 11.9819 6.58696C12.7466 5.38544 13.8377 4.42659 15.1275 3.82264C16.4173 3.21869 17.8524 2.99464 19.2649 3.1767C20.6775 3.35876 22.0089 3.93941 23.1034 4.85067C23.0427 4.88379 22.937 4.94215 22.8668 4.98473L14.9024 9.58517C14.7025 9.69878 14.5366 9.86356 14.4215 10.0626C14.3065 10.2616 14.2466 10.4877 14.2479 10.7175L14.2424 21.9419ZM16.071 17.9991L20.4018 15.4978L24.7325 17.9975V22.9985L20.4018 25.4983L16.071 22.9985V17.9991Z" fill="currentColor"/>
+          </svg>
+          ChatGPT
+        </button>
+        <button class="inline-editor-btn-tool inline-editor-btn-claude" disabled title="Re-перевод выделенного текста через Claude">
+          <svg class="w-3.5 h-3.5" viewBox="0 0 100 100" fill="none">
+            <g transform="translate(50, 50)">
+              <rect x="-3" y="-40" width="6" height="25" rx="3" fill="currentColor" transform="rotate(0)"/>
+              <rect x="-3" y="-40" width="6" height="25" rx="3" fill="currentColor" transform="rotate(30)"/>
+              <rect x="-3" y="-40" width="6" height="25" rx="3" fill="currentColor" transform="rotate(60)"/>
+              <rect x="-3" y="-40" width="6" height="25" rx="3" fill="currentColor" transform="rotate(90)"/>
+              <rect x="-3" y="-40" width="6" height="25" rx="3" fill="currentColor" transform="rotate(120)"/>
+              <rect x="-3" y="-40" width="6" height="25" rx="3" fill="currentColor" transform="rotate(150)"/>
+              <rect x="-3" y="-40" width="6" height="25" rx="3" fill="currentColor" transform="rotate(180)"/>
+              <rect x="-3" y="-40" width="6" height="25" rx="3" fill="currentColor" transform="rotate(210)"/>
+              <rect x="-3" y="-40" width="6" height="25" rx="3" fill="currentColor" transform="rotate(240)"/>
+              <rect x="-3" y="-40" width="6" height="25" rx="3" fill="currentColor" transform="rotate(270)"/>
+              <rect x="-3" y="-40" width="6" height="25" rx="3" fill="currentColor" transform="rotate(300)"/>
+              <rect x="-3" y="-40" width="6" height="25" rx="3" fill="currentColor" transform="rotate(330)"/>
+              <circle cx="0" cy="0" r="12" fill="currentColor"/>
+            </g>
+          </svg>
+          Claude
+        </button>
+        <button class="inline-editor-btn-tool inline-editor-btn-details" disabled title="Детали выделенного текста (выделите текст)">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+          </svg>
+          Детали
+        </button>
+        <button class="inline-editor-btn-tool inline-editor-btn-history" title="История переводов">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          История
+        </button>
+        <div class="inline-editor-tools-divider"></div>
+        <button class="inline-editor-btn inline-editor-btn-save" title="Сохранить изменения">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path>
+          </svg>
+          Сохранить
+        </button>
+        <button class="inline-editor-btn inline-editor-btn-approve ${isApproved ? 'approved' : ''}" title="${isApproved ? 'Перевод утверждён' : 'Утвердить перевод'}">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          ${isApproved ? 'Утверждено' : 'Утвердить'}
+        </button>
+      </div>
+    `;
+    
+    const originalContent = targetElement.innerHTML;
+    targetElement.innerHTML = '';
+    targetElement.appendChild(editorContainer);
+    
+    const textarea = editorContainer.querySelector('.inline-editor-textarea') as HTMLTextAreaElement;
+    const gptBtn = editorContainer.querySelector('.inline-editor-btn-gpt') as HTMLButtonElement;
+    const claudeBtn = editorContainer.querySelector('.inline-editor-btn-claude') as HTMLButtonElement;
+    const detailsBtn = editorContainer.querySelector('.inline-editor-btn-details') as HTMLButtonElement;
+    const historyBtn = editorContainer.querySelector('.inline-editor-btn-history') as HTMLButtonElement;
+    const saveBtn = editorContainer.querySelector('.inline-editor-btn-save') as HTMLButtonElement;
+    const approveBtn = editorContainer.querySelector('.inline-editor-btn-approve') as HTMLButtonElement;
+    
+    // Локальная переменная для выделенного текста
+    let currentSelectedText = '';
+    let selectionStart = 0;
+    let selectionEnd = 0;
+    
+    const handleInput = (e: Event) => {
+      e.stopPropagation();
+      const target = e.target as HTMLTextAreaElement;
+      target.style.height = 'auto';
+      target.style.height = target.scrollHeight + 'px';
+    };
+    
+    const handleSelection = () => {
+      if (!textarea) return;
+      
+      setTimeout(() => {
+        if (!textarea) return;
+        selectionStart = textarea.selectionStart;
+        selectionEnd = textarea.selectionEnd;
+        const text = textarea.value.substring(selectionStart, selectionEnd);
+        currentSelectedText = text;
+        
+        // Активируем/деактивируем кнопки в зависимости от наличия выделенного текста
+        const hasSelection = text.trim().length > 0;
+        if (gptBtn) gptBtn.disabled = !hasSelection;
+        if (claudeBtn) claudeBtn.disabled = !hasSelection;
+        if (detailsBtn) detailsBtn.disabled = !hasSelection;
+      }, 10);
+    };
+    
+    const preventClose = (e: Event) => {
+      e.stopPropagation();
+    };
+    
+    if (textarea) {
+      textarea.focus();
+      textarea.style.height = 'auto';
+      textarea.style.height = textarea.scrollHeight + 'px';
+      textarea.addEventListener('input', handleInput);
+      textarea.addEventListener('mouseup', handleSelection);
+      textarea.addEventListener('keyup', handleSelection);
+      textarea.addEventListener('click', preventClose);
+    }
+    
+    const handleSave = async () => {
+      if (!textarea) return;
+      const text = textarea.value.trim();
+      if (!text) return;
+      await saveTranslation(editingSentenceId, text, translationModelRef.current);
+      setEditingSentenceId(null);
+    };
+    
+    const handleApprove = async () => {
+      const currentlyApproved = approvedTranslationsRef.current.has(editingSentenceId);
+      if (currentlyApproved) return;
+      if (!textarea) return;
+      const text = textarea.value.trim();
+      if (text) {
+        await saveTranslation(editingSentenceId, text, translationModelRef.current);
+      }
+      await approveTranslation(editingSentenceId);
+      setEditingSentenceId(null);
+    };
+    
+    const handleCancel = () => {
+      setEditingSentenceId(null);
+    };
+    
+    const handleRetranslate = async (model: 'gpt' | 'claude') => {
+      if (!currentSelectedText || !textarea) return;
+      
+      // Добавляем волновую анимацию
+      const textareaWrapper = textarea.closest('.inline-editor-textarea-wrapper');
+      const overlay = document.createElement('div');
+      overlay.className = 'retranslating-overlay';
+      if (textareaWrapper) {
+        textareaWrapper.appendChild(overlay);
+      }
+      textarea.classList.add('retranslating');
+      
+      // Деактивируем кнопки во время перевода
+      if (gptBtn) gptBtn.disabled = true;
+      if (claudeBtn) claudeBtn.disabled = true;
+      
+      try {
+        // Получаем оригинальное предложение и абзац
+        const originalSentenceElement = document.querySelector(`.original-column [data-sentence-id="${editingSentenceId}"]`);
+        const originalSentenceText = originalSentenceElement?.textContent || '';
+        
+        const originalParagraph = originalSentenceElement?.closest('p, h1, h2, h3, h4, h5, h6, li');
+        const originalParagraphText = originalParagraph?.textContent || '';
+        
+        // Определяем: выделено всё предложение или только фрагмент
+        const fullTranslation = textarea.value;
+        const isFullSentenceSelected = currentSelectedText.trim() === fullTranslation.trim();
+        
+        const apiEndpoint = model === 'claude' ? '/api/claude' : '/api/chatgpt';
+        const modelName = model === 'claude' ? 'claude-sonnet-4-5-20250929' : 'gpt-4';
+        
+        let promptMessage = '';
+        
+        if (isFullSentenceSelected) {
+          // Выделено полное предложение - переводим с учётом оригинального предложения и контекста
+          promptMessage = `Переведи предложение с английского на казахский язык, учитывая контекст абзаца:\n\nКонтекст абзаца (English): "${originalParagraphText}"\n\nПредложение для перевода (English): "${originalSentenceText}"\n\nПредоставь ТОЛЬКО перевод на казахском языке без дополнительных объяснений.`;
+        } else {
+          // Выделен фрагмент - переводим только фрагмент с учётом контекста абзаца
+          promptMessage = `Переведи выделенный фрагмент с английского на казахский язык:\n\nКонтекст абзаца (English): "${originalParagraphText}"\n\nТекущий полный перевод предложения (Kazakh): "${fullTranslation}"\nФрагмент текущего перевода для замены (Kazakh): "${currentSelectedText}"\n\nПереведи ТОЛЬКО этот фрагмент заново, чтобы он хорошо вписывался в контекст. Предоставь только перевод фрагмента без объяснений.`;
+        }
+        
+        const response = await fetch(`${API_URL}${apiEndpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: promptMessage,
+            model: modelName,
+            temperature: 0.7
+          })
+        });
+        
+        if (!response.ok) throw new Error('\u041e\u0448\u0438\u0431\u043a\u0430 API');
+        const data = await response.json();
+        
+        // \u0417\u0430\u043c\u0435\u043d\u044f\u0435\u043c \u0432\u044b\u0434\u0435\u043b\u0435\u043d\u043d\u044b\u0439 \u0442\u0435\u043a\u0441\u0442 \u0432 textarea
+        const cleanedMessage = removeQuotes(data.message);
+        const newValue = textarea.value.substring(0, selectionStart) + cleanedMessage + textarea.value.substring(selectionEnd);
+        textarea.value = newValue;
+        textarea.style.height = 'auto';
+        textarea.style.height = textarea.scrollHeight + 'px';
+        
+        // \u0423\u0441\u0442\u0430\u043d\u0430\u0432\u043b\u0438\u0432\u0430\u0435\u043c \u043a\u0443\u0440\u0441\u043e\u0440 \u0432 \u043a\u043e\u043d\u0435\u0446 \u0432\u0441\u0442\u0430\u0432\u043b\u0435\u043d\u043d\u043e\u0433\u043e \u0442\u0435\u043a\u0441\u0442\u0430
+        const newCursorPos = selectionStart + data.message.length;
+        textarea.setSelectionRange(newCursorPos, newCursorPos);
+        textarea.focus();
+        
+        // \u0421\u0431\u0440\u0430\u0441\u044b\u0432\u0430\u0435\u043c \u0432\u044b\u0434\u0435\u043b\u0435\u043d\u0438\u0435 \u0438 \u0434\u0435\u0430\u043a\u0442\u0438\u0432\u0438\u0440\u0443\u0435\u043c \u043a\u043d\u043e\u043f\u043a\u0438
+        currentSelectedText = '';
+        if (gptBtn) gptBtn.disabled = true;
+        if (claudeBtn) claudeBtn.disabled = true;
+      } catch (error) {
+        console.error('\u041e\u0448\u0438\u0431\u043a\u0430 re-\u043f\u0435\u0440\u0435\u0432\u043e\u0434\u0430:', error);
+        alert('\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0432\u044b\u043f\u043e\u043b\u043d\u0438\u0442\u044c re-\u043f\u0435\u0440\u0435\u0432\u043e\u0434');
+      } finally {
+        // Удаляем волновую анимацию
+        textarea.classList.remove('retranslating');
+        if (overlay && overlay.parentElement) {
+          overlay.remove();
+        }
+      }
+    };
+    
+    const handleGlobalClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      
+      const isInsideEditor = editorContainer.contains(target);
+      const isInsideDetailsPanel = target.closest('[class*="animate-slideInRight"]');
+      const isTextarea = target.tagName === 'TEXTAREA' && target.closest('.inline-editor-container');
+      const isInsideModal = target.closest('.fixed.inset-0') || target.closest('[role="dialog"]');
+      
+      if (isInsideEditor || isInsideDetailsPanel || isTextarea || isInsideModal) {
+        return;
+      }
+      
+      const clickedSentence = target.closest('.sentence');
+      if (clickedSentence) {
+        const sentenceId = clickedSentence.getAttribute('data-sentence-id');
+        if (sentenceId === editingSentenceId) {
+          return;
+        }
+      }
+      
+      handleCancel();
+    };
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        handleCancel();
+      }
+    };
+    
+    const handleGptClick = (e: Event) => {
+      e.stopPropagation();
+      handleRetranslate('gpt');
+    };
+    
+    const handleClaudeClick = (e: Event) => {
+      e.stopPropagation();
+      handleRetranslate('claude');
+    };
+    
+    const handleDetailsClick = (e: Event) => {
+      e.stopPropagation();
+      openDetailsModal(editingSentenceId, currentSelectedText, selectionStart, selectionEnd);
+    };
+    
+    const handleHistoryClick = (e: Event) => {
+      e.stopPropagation();
+      openHistoryModal(editingSentenceId);
+    };
+    
+    const handleSaveClick = (e: Event) => {
+      e.stopPropagation();
+      handleSave();
+    };
+    
+    const handleApproveClick = (e: Event) => {
+      e.stopPropagation();
+      handleApprove();
+    };
+    
+    if (gptBtn) {
+      gptBtn.addEventListener('click', handleGptClick);
+    }
+    
+    if (claudeBtn) {
+      claudeBtn.addEventListener('click', handleClaudeClick);
+    }
+    
+    if (detailsBtn) {
+      detailsBtn.addEventListener('click', handleDetailsClick);
+    }
+    
+    if (historyBtn) {
+      historyBtn.addEventListener('click', handleHistoryClick);
+    }
+    
+    if (saveBtn) {
+      saveBtn.addEventListener('click', handleSaveClick);
+    }
+    
+    if (approveBtn && !isApproved) {
+      approveBtn.addEventListener('click', handleApproveClick);
+    }
+    
+    document.addEventListener('click', handleGlobalClick);
+    document.addEventListener('keydown', handleKeyDown);
+    
+    editorContainer.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+    
+    return () => {
+      if (textarea) {
+        textarea.removeEventListener('input', handleInput);
+        textarea.removeEventListener('mouseup', handleSelection);
+        textarea.removeEventListener('keyup', handleSelection);
+        textarea.removeEventListener('click', preventClose);
+      }
+      if (gptBtn) {
+        gptBtn.removeEventListener('click', handleGptClick);
+      }
+      if (claudeBtn) {
+        claudeBtn.removeEventListener('click', handleClaudeClick);
+      }
+      if (detailsBtn) {
+        detailsBtn.removeEventListener('click', handleDetailsClick);
+      }
+      if (historyBtn) {
+        historyBtn.removeEventListener('click', handleHistoryClick);
+      }
+      if (saveBtn) {
+        saveBtn.removeEventListener('click', handleSaveClick);
+      }
+      if (approveBtn && !isApproved) {
+        approveBtn.removeEventListener('click', handleApproveClick);
+      }
+      
+      document.removeEventListener('click', handleGlobalClick);
+      document.removeEventListener('keydown', handleKeyDown);
+      
+      if (targetElement && targetElement.parentElement) {
+        const editors = targetElement.querySelectorAll('.inline-editor-container');
+        editors.forEach(editor => editor.remove());
+        
+        if (targetElement.innerHTML !== originalContent) {
+          targetElement.innerHTML = originalContent;
+        }
+      }
+    };
+  }, [editingSentenceId, saveTranslation, approveTranslation, openDetailsModal, openHistoryModal]);
 
   return (
     <div className="h-screen bg-gray-100 flex flex-col overflow-hidden" style={{ maxHeight: '100vh' }}>
@@ -1027,6 +1615,251 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
             transform: translateX(0) scale(1);
           }
         }
+        
+        .inline-editor-container {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          padding: 12px;
+          background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+          border: 2px solid #7c3aed;
+          border-radius: 12px;
+          box-shadow: 0 8px 24px rgba(124, 58, 237, 0.15), 0 4px 12px rgba(0, 0, 0, 0.1);
+          animation: fadeInScale 0.2s ease-out;
+        }
+        
+        @keyframes fadeInScale {
+          0% {
+            opacity: 0;
+            transform: scale(0.95);
+          }
+          100% {
+            opacity: 1;
+            transform: scale(1);
+          }
+        }
+        
+        .inline-editor-textarea {
+          width: 100%;
+          min-height: 80px;
+          padding: 10px 12px;
+          font-family: 'Times New Roman', Times, serif;
+          font-size: 11pt;
+          line-height: 1.5;
+          border: 2px solid #cbd5e1;
+          border-radius: 8px;
+          background: white;
+          resize: none;
+          overflow: hidden;
+          transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        
+        .inline-editor-textarea::selection {
+          background: #a78bfa;
+          color: white;
+        }
+        
+        .inline-editor-textarea::-moz-selection {
+          background: #a78bfa;
+          color: white;
+        }
+        
+        .inline-editor-textarea:focus {
+          outline: none;
+          border-color: #7c3aed;
+          box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.1);
+        }
+        
+        .inline-editor-textarea-wrapper {
+          position: relative;
+        }
+        
+        .retranslating-overlay {
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          pointer-events: none;
+          border-radius: 8px;
+          overflow: hidden;
+          background: linear-gradient(
+            90deg,
+            transparent 0%,
+            rgba(124, 58, 237, 0.15) 25%,
+            rgba(167, 139, 250, 0.25) 50%,
+            rgba(124, 58, 237, 0.15) 75%,
+            transparent 100%
+          );
+          background-size: 200% 100%;
+          animation: waveTranslation 2s ease-in-out infinite;
+          z-index: 1;
+        }
+        
+        @keyframes waveTranslation {
+          0% {
+            background-position: 200% 0;
+          }
+          100% {
+            background-position: -200% 0;
+          }
+        }
+        
+        .inline-editor-textarea.retranslating {
+          position: relative;
+          background: rgba(248, 250, 252, 0.8);
+        }
+        
+        .inline-editor-tools {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 8px;
+          background: rgba(255, 255, 255, 0.5);
+          border: 1px solid #e2e8f0;
+          border-radius: 6px;
+        }
+        
+        .inline-editor-btn-tool {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 4px 10px;
+          font-size: 11px;
+          font-weight: 600;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          border: 1px solid #cbd5e1;
+          border-radius: 5px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          background: white;
+          color: #475569;
+          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+        
+        .inline-editor-btn-tool:hover:not(:disabled) {
+          background: #f8fafc;
+          border-color: #94a3b8;
+          color: #1e293b;
+          transform: translateY(-1px);
+          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        .inline-editor-btn-tool:active:not(:disabled) {
+          transform: translateY(0);
+        }
+        
+        .inline-editor-btn-tool:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+          background: #f1f5f9;
+          color: #94a3b8;
+        }
+        
+        .inline-editor-btn-tool svg {
+          flex-shrink: 0;
+        }
+        
+        .inline-editor-btn-gpt {
+          background: white;
+          border-color: #e5e7eb;
+          color: #374151;
+        }
+        
+        .inline-editor-btn-gpt:hover:not(:disabled) {
+          background: white;
+          border-color: #d1d5db;
+          color: #1f2937;
+        }
+        
+        .inline-editor-btn-gpt:disabled {
+          background: #f9fafb;
+          border-color: #e5e7eb;
+          color: #9ca3af;
+        }
+        
+        .inline-editor-btn-claude {
+          background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+          border-color: #f97316;
+          color: white;
+        }
+        
+        .inline-editor-btn-claude:hover:not(:disabled) {
+          background: linear-gradient(135deg, #ea580c 0%, #c2410c 100%);
+          border-color: #ea580c;
+          color: white;
+        }
+        
+        .inline-editor-btn-claude:disabled {
+          background: linear-gradient(135deg, #fdba74 0%, #fb923c 100%);
+          border-color: #fdba74;
+          color: white;
+          opacity: 0.5;
+        }
+        
+        .inline-editor-tools-divider {
+          width: 1px;
+          height: 24px;
+          background: #cbd5e1;
+          margin: 0 8px 0 auto;
+        }
+        
+        .inline-editor-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          padding: 5px 12px;
+          font-size: 12px;
+          font-weight: 600;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          border: none;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+          white-space: nowrap;
+        }
+        
+        .inline-editor-btn svg {
+          flex-shrink: 0;
+        }
+        
+        .inline-editor-btn-save {
+          background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
+          color: white;
+        }
+        
+        .inline-editor-btn-save:hover {
+          background: linear-gradient(135deg, #6d28d9 0%, #5b21b6 100%);
+          transform: translateY(-1px);
+          box-shadow: 0 4px 8px rgba(124, 58, 237, 0.4);
+        }
+        
+        .inline-editor-btn-save:active {
+          transform: translateY(0);
+        }
+        
+        .inline-editor-btn-approve {
+          background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+          color: white;
+        }
+        
+        .inline-editor-btn-approve:hover:not(.approved) {
+          background: linear-gradient(135deg, #059669 0%, #047857 100%);
+          transform: translateY(-1px);
+          box-shadow: 0 4px 8px rgba(16, 185, 129, 0.4);
+        }
+        
+        .inline-editor-btn-approve:active:not(.approved) {
+          transform: translateY(0);
+        }
+        
+        .inline-editor-btn-approve.approved {
+          background: linear-gradient(135deg, #86efac 0%, #6ee7b7 100%);
+          color: #065f46;
+          cursor: not-allowed;
+          opacity: 0.8;
+        }
 
         @keyframes slideInRight {
           0% {
@@ -1074,6 +1907,23 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
 
         .animate-fadeIn {
           animation: fadeIn 0.3s ease-out;
+        }
+
+        .diff-added {
+          background-color: #dcfce7;
+          color: #166534;
+          padding: 2px 4px;
+          border-radius: 3px;
+          font-weight: 500;
+        }
+        
+        .diff-removed {
+          background-color: #fee2e2;
+          color: #991b1b;
+          text-decoration: line-through;
+          padding: 2px 4px;
+          border-radius: 3px;
+          opacity: 0.8;
         }
 
         .thumbnail {
@@ -1270,7 +2120,7 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
             
             <div
               className={`absolute top-1/2 -translate-y-1/2 cursor-pointer transition-all duration-500 z-40 ${
-                sidebarOpen ? 'left-[135px]' : 'left-[-25px]'
+                sidebarOpen ? 'left-[152px]' : 'left-0'
               }`}
               onClick={() => setSidebarOpen(!sidebarOpen)}
               title={sidebarOpen ? 'Скрыть панель' : 'Показать страницы'}
@@ -1279,12 +2129,14 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
               }}
             >
               <div className="relative">
-                <div className="relative bg-gradient-to-br from-purple-600 via-purple-700 to-purple-800 hover:from-purple-700 hover:via-purple-800 hover:to-purple-900 rounded-full shadow-2xl w-12 h-12 flex items-center justify-center transition-all hover:scale-110 border-2 border-purple-400">
+                <div className={`relative bg-gradient-to-br from-purple-600 via-purple-700 to-purple-800 hover:from-purple-700 hover:via-purple-800 hover:to-purple-900 shadow-xl w-6 h-12 flex items-center justify-center transition-all hover:scale-105 border-2 border-purple-400 ${
+                  sidebarOpen ? 'rounded-r-lg border-l-0' : 'rounded-r-lg border-l-0'
+                }`}>
                   <div className="text-white">
                     {sidebarOpen ? (
-                      <ChevronLeft className="w-6 h-6 stroke-[3]" />
+                      <ChevronLeft className="w-5 h-5 stroke-[3]" />
                     ) : (
-                      <ChevronRight className="w-6 h-6 stroke-[3]" />
+                      <ChevronRight className="w-5 h-5 stroke-[3]" />
                     )}
                   </div>
                 </div>
@@ -1418,287 +2270,9 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
           )}
         </div>
 
-        {(() => {
-          if (!detailsPanelOpen || !selectedSentenceId) return null;
-          const originalSentence = document.querySelector(`[data-sentence-id="${selectedSentenceId}"]`);
-          const originalText = originalSentence?.textContent || '';
-          const history = translationHistory[selectedSentenceId] || [];
-          const isApproved = approvedTranslations.has(selectedSentenceId);
-          
-          return (
-            <div 
-              className={`bg-white shadow-2xl overflow-hidden flex-shrink-0 transition-all duration-500 ease-out ${
-                detailsPanelOpen ? 'w-[400px] opacity-100 translate-x-0' : 'w-0 opacity-0 translate-x-full pointer-events-none'
-              }`}
-              style={{
-                animation: detailsPanelOpen ? 'slideInFromRight 0.5s ease-out' : 'slideOutToRight 0.4s ease-in',
-                overflowY: detailsPanelOpen ? 'auto' : 'hidden'
-              }}
-            >
-              <div className="sticky top-0 bg-gradient-to-r from-purple-600 to-purple-700 text-white px-4 py-2.5 flex items-center justify-between shadow-lg z-10 border-b border-purple-500">
-                <h2 className="text-sm font-semibold flex items-center gap-2">
-                  <Settings className="w-4 h-4" />
-                  Редактор перевода
-                </h2>
-                <button 
-                  onClick={closeDetailsPanel}
-                  className="p-1 hover:bg-white/20 rounded-lg transition-colors"
-                  title="Закрыть панель"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="p-5 space-y-5">
-                <div className="bg-gradient-to-br from-gray-50 to-gray-100 p-4 rounded-xl border border-gray-200 shadow-sm">
-                  <div className="flex items-center gap-2 mb-3">
-                    <FileText className="w-4 h-4 text-gray-600" />
-                    <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide">Оригинал</h3>
-                  </div>
-                  <p className="text-gray-900 leading-relaxed text-sm">{originalText}</p>
-                </div>
-
-                <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                  <div className="flex items-center gap-2 mb-3">
-                    <Edit3 className="w-4 h-4 text-purple-600" />
-                    <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide">Перевод</h3>
-                  </div>
-                  <textarea
-                    value={editedTranslation}
-                    onChange={(e) => setEditedTranslation(e.target.value)}
-                    className="w-full h-28 px-3 py-2.5 text-sm border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 resize-none transition-all"
-                    placeholder="Введите перевод..."
-                  />
-                  <button
-                    onClick={() => selectedSentenceId && saveTranslation(selectedSentenceId, editedTranslation, translationModel)}
-                    className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 active:scale-[0.98] transition-all text-sm font-semibold shadow-md hover:shadow-lg"
-                  >
-                    <Copy className="w-4 h-4" />
-                    Сохранить изменения
-                  </button>
-                </div>
-
-                <div className="border-t border-gray-200 pt-5 space-y-3">
-                  <button
-                    onClick={explainTranslation}
-                    disabled={isExplaining}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 active:scale-[0.98] transition-all border-2 border-blue-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold"
-                  >
-                    <MessageCircle className="w-4 h-4" />
-                    {isExplaining ? 'Получение объяснения...' : 'Объяснить перевод'}
-                  </button>
-                  
-                  {explanation && (
-                    <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-xl border-2 border-blue-200 shadow-sm">
-                      <div className="flex items-center gap-2 mb-2">
-                        <MessageCircle className="w-4 h-4 text-blue-600" />
-                        <h4 className="text-xs font-bold text-blue-800 uppercase tracking-wide">Объяснение</h4>
-                      </div>
-                      <p className="text-sm text-blue-900 leading-relaxed whitespace-pre-wrap">{explanation}</p>
-                    </div>
-                  )}
-
-                  <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                    <div className="flex items-center gap-2 mb-3">
-                      <Sparkles className="w-4 h-4 text-purple-600" />
-                      <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Улучшить перевод</h4>
-                    </div>
-                    <div className="space-y-2 mb-3">
-                      <textarea
-                        value={improvementPrompt}
-                        onChange={(e) => setImprovementPrompt(e.target.value)}
-                        placeholder="Например: сделай более формальным, используй разговорный стиль, упрости, добавь вежливости..."
-                        className="w-full px-3 py-2.5 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-sm transition-all resize-none"
-                        rows={3}
-                      />
-                      <button
-                        onClick={improveTranslation}
-                        disabled={isImproving || !improvementPrompt.trim()}
-                        className="w-full px-4 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-semibold text-sm shadow-md"
-                      >
-                        <Sparkles className="w-4 h-4" />
-                        {isImproving ? 'Обработка...' : 'Улучшить с помощью AI'}
-                      </button>
-                    </div>
-                    
-                    {improvementResult && (() => {
-                      // Парсим результат на варианты (по номерам 1., 2., 3. и т.д.)
-                      const variants = improvementResult
-                        .split(/\n(?=\d+\.)/)
-                        .map(v => v.trim())
-                        .filter(v => v.length > 0)
-                        .map(v => v.replace(/^\d+\.\s*/, ''));
-                      
-                      return (
-                        <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-4 rounded-xl border-2 border-purple-200 space-y-3">
-                          <div className="flex items-center gap-2 mb-2">
-                            <Sparkles className="w-4 h-4 text-purple-600" />
-                            <h5 className="text-xs font-bold text-purple-800 uppercase tracking-wide">
-                              Варианты улучшений ({variants.length})
-                            </h5>
-                          </div>
-                          <div className="space-y-2">
-                            {variants.map((variant, idx) => (
-                              <div 
-                                key={idx} 
-                                className="bg-white p-3 rounded-lg border border-purple-200 hover:border-purple-400 transition-all group cursor-pointer"
-                                onClick={() => {
-                                  saveTranslation(selectedSentenceId!, variant, translationModel);
-                                  setImprovementResult('');
-                                  setImprovementPrompt('');
-                                }}
-                              >
-                                <div className="flex items-start gap-2">
-                                  <span className="flex-shrink-0 w-6 h-6 bg-purple-500 text-white rounded-full flex items-center justify-center text-xs font-bold">
-                                    {idx + 1}
-                                  </span>
-                                  <p className="text-sm text-gray-900 leading-relaxed flex-1">{variant}</p>
-                                  <Check className="w-4 h-4 text-purple-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          <button
-                            onClick={() => {
-                              setImprovementResult('');
-                              setImprovementPrompt('');
-                            }}
-                            className="w-full px-3 py-2 text-xs text-gray-600 hover:text-gray-800 font-medium transition-colors"
-                          >
-                            Закрыть варианты
-                          </button>
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  <button
-                    onClick={() => setShowHistory(!showHistory)}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-50 text-gray-700 rounded-lg hover:bg-gray-100 active:scale-[0.98] transition-all border-2 border-gray-200 text-sm font-semibold"
-                  >
-                    <History className="w-4 h-4" />
-                    История версий ({history.length})
-                  </button>
-                  
-                  {showHistory && history.length > 0 && (
-                    <div className="bg-gradient-to-br from-gray-50 to-gray-100 p-4 rounded-xl border border-gray-200 shadow-sm">
-                      <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wide mb-4 flex items-center gap-2">
-                        <History className="w-4 h-4" />
-                        Timeline версий
-                      </h4>
-                      <div className="relative">
-                        {/* Вертикальная линия timeline */}
-                        <div className="absolute left-[9px] top-0 bottom-0 w-0.5 bg-gradient-to-b from-purple-400 via-purple-300 to-purple-200"></div>
-                        
-                        <div className="space-y-6">
-                          {history.map((item: {text: string, timestamp: number, model?: string}, idx: number) => {
-                            const isLatest = idx === history.length - 1;
-                            return (
-                              <div key={idx} className="relative pl-8">
-                                {/* Точка на timeline */}
-                                <div className={`absolute left-0 top-1 w-[18px] h-[18px] rounded-full border-3 border-white shadow-md z-10 ${
-                                  isLatest 
-                                    ? 'bg-gradient-to-br from-purple-500 to-purple-600 ring-4 ring-purple-200' 
-                                    : 'bg-gradient-to-br from-purple-400 to-purple-500'
-                                }`}>
-                                  {isLatest && (
-                                    <div className="absolute inset-0 rounded-full bg-purple-400 animate-ping opacity-75"></div>
-                                  )}
-                                </div>
-                                
-                                {/* Карточка версии */}
-                                <div className={`bg-white rounded-lg p-3 shadow-sm border transition-all hover:shadow-md ${
-                                  isLatest 
-                                    ? 'border-purple-300 ring-1 ring-purple-200' 
-                                    : 'border-gray-200'
-                                }`}>
-                                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="text-xs text-gray-600 font-semibold">
-                                        {new Date(item.timestamp).toLocaleString('ru-RU', {
-                                          day: '2-digit',
-                                          month: '2-digit',
-                                          year: 'numeric',
-                                          hour: '2-digit',
-                                          minute: '2-digit'
-                                        })}
-                                      </span>
-                                      {isLatest && (
-                                        <span className="px-2 py-0.5 bg-purple-500 text-white rounded-full text-xs font-bold">
-                                          Текущая
-                                        </span>
-                                      )}
-                                      {item.model && (
-                                        <span className="px-2 py-0.5 bg-gradient-to-r from-purple-100 to-purple-200 text-purple-700 rounded-full text-xs font-semibold border border-purple-300">
-                                          {item.model}
-                                        </span>
-                                      )}
-                                    </div>
-                                    {!isLatest && (
-                                      <button
-                                        onClick={() => {
-                                          // Восстанавливаем версию без создания новой записи в истории
-                                          setTranslations(prev => ({
-                                            ...prev,
-                                            [currentPage]: {
-                                              ...(prev[currentPage] || {}),
-                                              [selectedSentenceId!]: item.text,
-                                            },
-                                          }));
-                                          setEditedTranslation(item.text);
-                                          // Сбрасываем статус "одобрено" при восстановлении старой версии
-                                          setApprovedTranslations(prev => {
-                                            const newSet = new Set(prev);
-                                            newSet.delete(selectedSentenceId!);
-                                            return newSet;
-                                          });
-                                        }}
-                                        className="flex items-center justify-center w-7 h-7 text-purple-600 bg-purple-50 hover:bg-purple-100 rounded-lg transition-all hover:scale-110 border border-purple-200 hover:border-purple-300"
-                                        title="Восстановить эту версию"
-                                      >
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-                                        </svg>
-                                      </button>
-                                    )}
-                                  </div>
-                                  <p className="text-sm text-gray-900 leading-relaxed">{item.text}</p>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <button
-                    onClick={() => {
-                      if (selectedSentenceId) {
-                        approveTranslation(selectedSentenceId);
-                        closeDetailsPanel();
-                      }
-                    }}
-                    disabled={isApproved}
-                    className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-bold transition-all text-sm shadow-md ${
-                      isApproved
-                        ? 'bg-green-100 text-green-700 border-2 border-green-300 cursor-not-allowed'
-                        : 'bg-green-600 text-white hover:bg-green-700 active:scale-[0.98] hover:shadow-lg'
-                    }`}
-                  >
-                    <Check className="w-5 h-5" />
-                    {isApproved ? 'Перевод утверждён' : 'Утвердить перевод'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
-
         {hoveredSentenceId && buttonPosition && hoveredSentenceRect && (() => {
         const hasTranslation = translations[currentPage]?.[hoveredSentenceId];
         
-        // Показываем кнопку только для НЕпереведенных предложений
         if (hasTranslation) {
           return null;
         }
@@ -1767,8 +2341,6 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
               const sentenceId = hoveredSentenceId;
               if (!sentenceId) return;
               
-              // КРИТИЧНО: Добавляем в translatingIdsRef СРАЗУ, до любых других операций
-              // Это предотвратит очистку выделения событиями mouseout
               translatingIdsRef.current.add(sentenceId);
               
               const sentence = document.querySelector(`[data-sentence-id="${sentenceId}"]`);
@@ -1779,7 +2351,6 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
               
               const text = sentence.textContent || '';
               
-              // Форсируем сохранение активного класса
               requestAnimationFrame(() => {
                 document.querySelectorAll(`[data-sentence-id="${sentenceId}"]`).forEach((el) => {
                   if (!el.closest('.thumbnail')) {
@@ -1790,7 +2361,6 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
               
               setIsTranslating(true);
               
-              // Периодически восстанавливаем выделение во время перевода
               const keepAliveInterval = setInterval(() => {
                 if (translatingIdsRef.current.has(sentenceId)) {
                   document.querySelectorAll(`[data-sentence-id="${sentenceId}"]`).forEach((el) => {
@@ -1819,12 +2389,10 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
                 
                 const data = await response.json();
                 
-                // Сохраняем перевод (это обновит и локальное состояние, и БД)
                 await saveTranslation(sentenceId, data.text, translationModel);
                 
                 translatingIdsRef.current.delete(sentenceId);
                 
-                // Очищаем интервал
                 clearInterval(keepAliveInterval);
                 
                 isButtonHoveredRef.current = false;
@@ -1861,6 +2429,325 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
         </>
         );
       })()}
+
+
+
+        {/* Модальное окно деталей */}
+        {detailsModalOpen && selectedSentenceId && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[1200] animate-fadeIn" onClick={closeDetailsModal}>
+            <div className="bg-white rounded-2xl shadow-2xl w-[600px] max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              <div className="sticky top-0 bg-gradient-to-r from-purple-600 to-purple-700 text-white px-6 py-4 flex items-center justify-between rounded-t-2xl z-10">
+                <h2 className="text-lg font-bold flex items-center gap-2">
+                  <FileText className="w-5 h-5" />
+                  Детали перевода
+                </h2>
+                <button 
+                  onClick={closeDetailsModal}
+                  className="p-1.5 hover:bg-white/20 rounded-lg transition-colors"
+                  title="Закрыть"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              
+              <div className="p-6 space-y-5">
+                {modalSelectedText && (
+                  <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-xl border-2 border-blue-200 shadow-sm">
+                    <h3 className="text-xs font-bold text-blue-800 uppercase tracking-wide mb-2 flex items-center gap-2">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                      </svg>
+                      Выделенный текст
+                    </h3>
+                    <p className="text-sm text-blue-900 leading-relaxed font-semibold">{modalSelectedText}</p>
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  <button
+                    onClick={explainTranslation}
+                    disabled={isExplaining}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 active:scale-[0.98] transition-all border-2 border-blue-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    {isExplaining ? 'Получение объяснения...' : 'Объяснить перевод'}
+                  </button>
+                  
+                  {explanation && (
+                    <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-xl border-2 border-blue-200 shadow-sm">
+                      <div className="flex items-center gap-2 mb-2">
+                        <MessageCircle className="w-4 h-4 text-blue-600" />
+                        <h4 className="text-xs font-bold text-blue-800 uppercase tracking-wide">Объяснение</h4>
+                      </div>
+                      <p className="text-sm text-blue-900 leading-relaxed whitespace-pre-wrap">{explanation}</p>
+                    </div>
+                  )}
+
+                  <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Sparkles className="w-4 h-4 text-purple-600" />
+                      <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Улучшить перевод</h4>
+                    </div>
+                    <div className="space-y-2 mb-3">
+                      <textarea
+                        value={improvementPrompt}
+                        onChange={(e) => setImprovementPrompt(e.target.value)}
+                        placeholder="Например: сделай более формальным, используй разговорный стиль, упрости..."
+                        className="w-full px-3 py-2.5 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-sm transition-all resize-none"
+                        rows={3}
+                        spellCheck={false}
+                      />
+                      <button
+                        onClick={improveTranslation}
+                        disabled={isImproving || !improvementPrompt.trim()}
+                        className="w-full px-4 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-semibold text-sm shadow-md"
+                      >
+                        <Sparkles className="w-4 h-4" />
+                        {isImproving ? 'Обработка...' : 'Улучшить с помощью AI'}
+                      </button>
+                    </div>
+                    
+                    {improvementResult && (() => {
+                      const variants = improvementResult
+                        .split(/\n(?=\d+\.)/)
+                        .map(v => v.trim())
+                        .filter(v => v.length > 0)
+                        .map(v => removeQuotes(v.replace(/^\d+\.\s*/, '')));
+                      
+                      return (
+                        <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-4 rounded-xl border-2 border-purple-200 space-y-3">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Sparkles className="w-4 h-4 text-purple-600" />
+                            <h5 className="text-xs font-bold text-purple-800 uppercase tracking-wide">
+                              Варианты улучшений ({variants.length})
+                            </h5>
+                          </div>
+                          <div className="space-y-2">
+                            {variants.map((variant, idx) => (
+                              <div 
+                                key={idx} 
+                                className="bg-white p-3 rounded-lg border border-purple-200 hover:border-purple-400 transition-all group cursor-pointer"
+                                onClick={async () => {
+                                  // Сначала закрываем модальное окно для быстрого отклика UI
+                                  setImprovementResult('');
+                                  setImprovementPrompt('');
+                                  closeDetailsModal();
+                                  
+                                  // Затем выполняем обновление в фоне
+                                  const editorContainer = document.querySelector(`[data-editing-sentence="${selectedSentenceId}"]`);
+                                  const textarea = editorContainer?.querySelector('.inline-editor-textarea') as HTMLTextAreaElement;
+                                  
+                                  if (!textarea) {
+                                    // Если textarea не найдена, обновляем перевод напрямую
+                                    const currentTranslation = translationsRef.current[currentPageRef.current]?.[selectedSentenceId] || '';
+                                    const newText = currentTranslation.substring(0, modalSelectionStart) + variant + currentTranslation.substring(modalSelectionEnd);
+                                    
+                                    await saveTranslation(selectedSentenceId, newText, translationModel);
+                                    return;
+                                  }
+                                  
+                                  // Заменяем только выделенную часть текста
+                                  const fullText = textarea.value;
+                                  const newText = fullText.substring(0, modalSelectionStart) + variant + fullText.substring(modalSelectionEnd);
+                                  
+                                  // Обновляем textarea
+                                  textarea.value = newText;
+                                  textarea.style.height = 'auto';
+                                  textarea.style.height = textarea.scrollHeight + 'px';
+                                  
+                                  // Создаем и диспатчим событие input для обновления
+                                  const inputEvent = new Event('input', { bubbles: true });
+                                  textarea.dispatchEvent(inputEvent);
+                                  
+                                  // Сохраняем обновленный перевод в фоне
+                                  await saveTranslation(selectedSentenceId, newText, translationModel);
+                                  
+                                  // Закрываем inline редактор после применения варианта
+                                  setEditingSentenceId(null);
+                                }}
+                              >
+                                <div className="flex items-start gap-2">
+                                  <span className="flex-shrink-0 w-6 h-6 bg-purple-500 text-white rounded-full flex items-center justify-center text-xs font-bold">
+                                    {idx + 1}
+                                  </span>
+                                  <p className="text-sm text-gray-900 leading-relaxed flex-1">{variant}</p>
+                                  <Check className="w-4 h-4 text-purple-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <button
+                            onClick={() => {
+                              setImprovementResult('');
+                              setImprovementPrompt('');
+                            }}
+                            className="w-full px-3 py-2 text-xs text-gray-600 hover:text-gray-800 font-medium transition-colors"
+                          >
+                            Закрыть варианты
+                          </button>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Модальное окно истории */}
+        {historyModalOpen && selectedSentenceId && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[1200] animate-fadeIn" onClick={closeHistoryModal}>
+            <div className="bg-white rounded-2xl shadow-2xl w-[700px] max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              <div className="sticky top-0 bg-gradient-to-r from-indigo-600 to-indigo-700 text-white px-6 py-4 flex items-center justify-between rounded-t-2xl z-10">
+                <h2 className="text-lg font-bold flex items-center gap-2">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  История переводов
+                </h2>
+                <button 
+                  onClick={closeHistoryModal}
+                  className="p-1.5 hover:bg-white/20 rounded-lg transition-colors"
+                  title="Закрыть"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              
+              <div className="p-6">
+                {translationHistory[selectedSentenceId] && translationHistory[selectedSentenceId].length > 0 ? (
+                  <div className="bg-gradient-to-br from-gray-50 to-gray-100 p-5 rounded-xl border border-gray-200 shadow-sm">
+                    <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-4 flex items-center gap-2">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      Timeline версий
+                    </h4>
+                    <div className="relative">
+                      <div className="absolute left-[9px] top-0 bottom-0 w-0.5 bg-gradient-to-b from-indigo-400 via-indigo-300 to-indigo-200"></div>
+                      
+                      <div className="space-y-6">
+                        {translationHistory[selectedSentenceId].map((item: {text: string, timestamp: number, model?: string}, idx: number) => {
+                          const isLatest = idx === translationHistory[selectedSentenceId].length - 1;
+                          return (
+                            <div key={idx} className="relative pl-8">
+                              <div className={`absolute left-0 top-1 w-[18px] h-[18px] rounded-full border-3 border-white shadow-md z-10 ${
+                                isLatest 
+                                  ? 'bg-gradient-to-br from-indigo-500 to-indigo-600 ring-4 ring-indigo-200' 
+                                  : 'bg-gradient-to-br from-indigo-400 to-indigo-500'
+                              }`}>
+                                {isLatest && (
+                                  <div className="absolute inset-0 rounded-full bg-indigo-400 animate-ping opacity-75"></div>
+                                )}
+                              </div>
+                              
+                              <div className={`bg-white rounded-lg p-4 shadow-sm border transition-all hover:shadow-md ${
+                                isLatest 
+                                  ? 'border-indigo-300 ring-1 ring-indigo-200' 
+                                  : 'border-gray-200'
+                              }`}>
+                                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-xs text-gray-600 font-semibold">
+                                      {new Date(item.timestamp).toLocaleString('ru-RU', {
+                                        day: '2-digit',
+                                        month: '2-digit',
+                                        year: 'numeric',
+                                        hour: '2-digit',
+                                        minute: '2-digit'
+                                      })}
+                                    </span>
+                                    {isLatest && (
+                                      <span className="px-2 py-0.5 bg-indigo-500 text-white rounded-full text-xs font-bold">
+                                        Текущая
+                                      </span>
+                                    )}
+                                    {item.model && (
+                                      <span className="px-2 py-0.5 bg-gradient-to-r from-indigo-100 to-indigo-200 text-indigo-700 rounded-full text-xs font-semibold border border-indigo-300">
+                                        {item.model}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {!isLatest && (
+                                    <button
+                                      onClick={() => {
+                                        saveTranslation(selectedSentenceId, item.text, translationModel);
+                                        
+                                        const textarea = document.querySelector('.inline-editor-textarea') as HTMLTextAreaElement;
+                                        if (textarea) {
+                                          textarea.value = item.text;
+                                          textarea.style.height = 'auto';
+                                          textarea.style.height = textarea.scrollHeight + 'px';
+                                        }
+                                        
+                                        setApprovedTranslations(prev => {
+                                          const newSet = new Set(prev);
+                                          newSet.delete(selectedSentenceId);
+                                          return newSet;
+                                        });
+                                      }}
+                                      className="flex items-center justify-center w-8 h-8 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-all hover:scale-110 border border-indigo-200 hover:border-indigo-300"
+                                      title="Восстановить эту версию"
+                                    >
+                                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                                      </svg>
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="text-sm text-gray-900 leading-relaxed">
+                                  {idx > 0 ? (
+                                    // Показываем diff с предыдущей версией
+                                    <>
+                                      {(() => {
+                                        const previousVersion = translationHistory[selectedSentenceId][idx - 1];
+                                        const diff = computeDiff(previousVersion.text, item.text);
+                                        
+                                        // Проверяем есть ли изменения
+                                        const hasChanges = diff.some(part => part.type !== 'unchanged');
+                                        
+                                        if (!hasChanges) {
+                                          // Если нет изменений, показываем обычный текст
+                                          return <span>{item.text}</span>;
+                                        }
+                                        
+                                        return diff.map((part, partIdx) => {
+                                          if (part.type === 'added') {
+                                            return <span key={partIdx} className="diff-added">{part.text}</span>;
+                                          } else if (part.type === 'removed') {
+                                            return <span key={partIdx} className="diff-removed">{part.text}</span>;
+                                          } else {
+                                            return <span key={partIdx}>{part.text}</span>;
+                                          }
+                                        });
+                                      })()}
+                                    </>
+                                  ) : (
+                                    // Первая версия - показываем как есть
+                                    <span>{item.text}</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-gradient-to-br from-gray-50 to-gray-100 p-8 rounded-xl border border-gray-200 text-center">
+                    <svg className="w-16 h-16 text-gray-300 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <p className="text-gray-600 font-medium">История переводов пока пуста</p>
+                    <p className="text-gray-500 text-sm mt-1">Сохраните перевод чтобы начать отслеживать историю</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
