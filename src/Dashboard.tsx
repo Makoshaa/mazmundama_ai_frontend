@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BookOpen, Upload, Trash2, Eye, User, LogOut, FileText, Calendar } from 'lucide-react';
+import { BookOpen, Upload, Trash2, Eye, User, LogOut, FileText, Calendar, Download } from 'lucide-react';
 import { useAuth } from './AuthContext';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
@@ -23,6 +23,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenBook }) => {
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [downloading, setDownloading] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState<'in-progress' | 'completed'>('in-progress');
 
@@ -121,6 +122,49 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenBook }) => {
     } catch (err: any) {
       console.error('Ошибка удаления:', err);
       alert('Не удалось удалить книгу');
+    }
+  };
+
+  const handleDownloadBook = async (bookId: number, title: string) => {
+    try {
+      setDownloading(bookId);
+      const response = await fetch(`${API_URL}/api/books/${bookId}/download`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) throw new Error('Ошибка скачивания книги');
+
+      const data = await response.json();
+      
+      // Декодируем base64 в blob
+      const byteCharacters = atob(data.content);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: data.contentType });
+      
+      // Создаем временную ссылку для скачивания
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = data.filename;
+      document.body.appendChild(a);
+      a.click();
+      
+      // Очищаем
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err: any) {
+      console.error('Ошибка скачивания:', err);
+      alert('Не удалось скачать книгу');
+    } finally {
+      setDownloading(null);
     }
   };
 
@@ -416,6 +460,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenBook }) => {
                           <span>Открыть</span>
                         </button>
                         <button
+                          onClick={() => handleDownloadBook(book.id, book.title)}
+                          disabled={downloading === book.id}
+                          className="px-4 py-3 bg-green-50 text-green-600 rounded-xl hover:bg-green-100 transition-all border border-green-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={downloading === book.id ? "Скачивание..." : "Скачать"}
+                        >
+                          {downloading === book.id ? (
+                            <div className="w-5 h-5 border-2 border-green-600 border-t-transparent rounded-full animate-spin"></div>
+                          ) : (
+                            <Download className="w-5 h-5" />
+                          )}
+                        </button>
+                        <button
                           onClick={() => handleDeleteBook(book.id, book.title)}
                           className="px-4 py-3 bg-red-50 text-red-600 rounded-xl hover:bg-red-100 transition-all border border-red-200"
                           title="Удалить"
@@ -541,6 +597,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenBook }) => {
                         >
                           <Eye className="w-5 h-5" />
                           <span>Открыть</span>
+                        </button>
+                        <button
+                          onClick={() => handleDownloadBook(book.id, book.title)}
+                          disabled={downloading === book.id}
+                          className="px-4 py-3 bg-green-50 text-green-600 rounded-xl hover:bg-green-100 transition-all border border-green-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={downloading === book.id ? "Скачивание..." : "Скачать"}
+                        >
+                          {downloading === book.id ? (
+                            <div className="w-5 h-5 border-2 border-green-600 border-t-transparent rounded-full animate-spin"></div>
+                          ) : (
+                            <Download className="w-5 h-5" />
+                          )}
                         </button>
                         <button
                           onClick={() => handleDeleteBook(book.id, book.title)}
