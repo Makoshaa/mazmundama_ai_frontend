@@ -84,7 +84,7 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showTranslation, setShowTranslation] = useState(true);
   const [showHighlights, setShowHighlights] = useState(true);
-  const [translationModel, setTranslationModel] = useState<'kazllm' | 'claude' | 'chatgpt'>('kazllm');
+  const [translationModel, setTranslationModel] = useState<'claude' | 'chatgpt'>('chatgpt');
   const [error, setError] = useState('');
   const [hoveredSentenceId, setHoveredSentenceId] = useState<string | null>(null);
   const [buttonPosition, setButtonPosition] = useState<{x: number, y: number} | null>(null);
@@ -105,7 +105,7 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
   const translationsRef = useRef<Record<number, Record<string, string>>>({});
   const approvedTranslationsRef = useRef<Set<string>>(new Set());
   const currentPageRef = useRef<number>(0);
-  const translationModelRef = useRef<'kazllm' | 'claude' | 'chatgpt'>('kazllm');
+  const translationModelRef = useRef<'claude' | 'chatgpt'>('chatgpt');
   const [editingSentenceId, setEditingSentenceId] = useState<string | null>(null);
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
@@ -563,9 +563,8 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
     const originalText = originalElement?.textContent || '';
     const translatedText = modalSelectedText;
     
-    const apiModel = translationModel === 'kazllm' ? 'chatgpt' : translationModel;
-    const apiEndpoint = apiModel === 'claude' ? '/api/claude' : '/api/chatgpt';
-    const modelName = apiModel === 'claude' ? 'claude-sonnet-4-5-20250929' : 'gpt-4';
+    const apiEndpoint = translationModel === 'claude' ? '/api/claude' : '/api/chatgpt';
+    const modelName = translationModel === 'claude' ? 'claude-sonnet-4-5-20250929' : 'gpt-4';
     
     setIsExplaining(true);
     try {
@@ -612,9 +611,8 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
     // Определяем: выделено всё предложение или только фрагмент
     const isFullSentenceSelected = modalSelectedText.trim() === fullTranslation.trim();
     
-    const apiModel = translationModel === 'kazllm' ? 'chatgpt' : translationModel;
-    const apiEndpoint = apiModel === 'claude' ? '/api/claude' : '/api/chatgpt';
-    const modelName = apiModel === 'claude' ? 'claude-sonnet-4-5-20250929' : 'gpt-4';
+    const apiEndpoint = translationModel === 'claude' ? '/api/claude' : '/api/chatgpt';
+    const modelName = translationModel === 'claude' ? 'claude-sonnet-4-5-20250929' : 'gpt-4';
     
     let promptMessage = '';
     
@@ -2090,10 +2088,9 @@ export default function DocxViewer({ bookId, bookTitle, onBack }: DocxViewerProp
 
             <select
               value={translationModel}
-              onChange={(e) => setTranslationModel(e.target.value as 'kazllm' | 'claude' | 'chatgpt')}
+              onChange={(e) => setTranslationModel(e.target.value as 'claude' | 'chatgpt')}
               className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white hover:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-colors cursor-pointer"
             >
-              <option value="kazllm">KazLLM</option>
               <option value="claude">Claude</option>
               <option value="chatgpt">ChatGPT</option>
             </select>
